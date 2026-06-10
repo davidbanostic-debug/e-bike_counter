@@ -220,7 +220,7 @@ function tile(b){
   return `<div class="tile ${b.group}" data-id="${b.id}"><div class="name">${b.name}${hint}</div><div class="count" id="c-${b.id}">0</div></div>`;
 }
 function addTap(id, el){
-  session.events.push({ tapId:uid(), ts:new Date().toISOString(), type:id, synced:false });
+  session.events.push({ tapId:uid(), ts:new Date().toISOString(), type:id, synced:false, voided:false, sent:false });
   saveSession();
   if(navigator.vibrate) navigator.vibrate(15);
   refreshCounts(); updateSync();
@@ -228,20 +228,23 @@ function addTap(id, el){
   flush(); // opportunistic; interval is the safety net
 }
 function undo(){
-  if(!session.events.length){ toast("Nothing to undo"); return; }
-  // remove the most recent tap; if it was already synced it's harmless to leave in the sheet,
-  // but we mark a tombstone so it isn't counted locally. Simplest: pop unsynced; if synced, warn.
-  const last = session.events[session.events.length-1];
-  if(last.synced){
-    if(!confirm("The last tap is already saved to the sheet. Remove it locally anyway? (It will remain in the sheet — tell David to drop that row.)")) return;
+  const active = session.events.filter(e=>!e.voided);
+  if(!active.length){ toast("Nothing to undo"); return; }
+  const last = active[active.length-1];
+  if(last.sent){
+    last.voided = true;   // already left the phone -> ask the sheet to delete its row
+  } else {
+    session.events.splice(session.events.indexOf(last), 1);  // never sent -> just drop it
   }
-  session.events.pop(); saveSession(); refreshCounts(); updateSync();
+  saveSession(); refreshCounts(); updateSync();
+  flush();                // push the deletion / state
   toast("Removed: " + typeName(last.type));
 }
 function refreshCounts(){
-  const counts = {}; session.events.forEach(e=> counts[e.type]=(counts[e.type]||0)+1);
+  const active = session.events.filter(e=>!e.voided);
+  const counts = {}; active.forEach(e=> counts[e.type]=(counts[e.type]||0)+1);
   CONFIG.bikeTypes.forEach(b=>{ const el=$("#c-"+b.id); if(el) el.textContent = counts[b.id]||0; });
-  $("#liveTotal").textContent = session.events.length;
+  $("#liveTotal").textContent = active.length;
 }
 function startClock(){
   clearInterval(clockTimer);
@@ -253,18 +256,22 @@ function startClock(){
 /* ============================ SYNC (micro-batch) ============================ */
 function startFlush(){ clearInterval(flushTimer); flushTimer=setInterval(flush, CONFIG.flushMs); }
 function stopFlush(){ clearInterval(flushTimer); }
-function pendingTaps(){ return session ? session.events.filter(e=>!e.synced) : []; }
+function pendingAdds(){ return session ? session.events.filter(e=>!e.voided && !e.synced) : []; }
+function pendingVoids(){ return session ? session.events.filter(e=>e.voided && e.sent) : []; }
+function pendingTaps(){ return pendingAdds().concat(pendingVoids()); }  // unresolved work
 
 async function flush(){
   if(inFlight || !session) return;
-  const pending = pendingTaps();
-  if(!pending.length){ updateSync(); return; }
+  const adds = pendingAdds(), voids = pendingVoids();
+  if(!adds.length && !voids.length){ updateSync(); return; }
   if(!CONFIG.endpoint){ updateSync(true); return; }   // offline / not configured
   inFlight = true; updateSync();
-  const sentIds = pending.map(e=>e.tapId);
+  adds.forEach(e=>e.sent=true);                        // track that they've left the phone
+  const addIds = adds.map(e=>e.tapId), voidIds = voids.map(e=>e.tapId);
   const payload = {
     sessionId:session.sessionId, counter:session.counter, location:session.location, start:session.start,
-    taps: pending.map(e=>({ tapId:e.tapId, ts:e.ts, type:e.type, label:typeName(e.type) }))
+    taps:  adds.map(e=>({ tapId:e.tapId, ts:e.ts, type:e.type, label:typeName(e.type) })),
+    voids: voidIds
   };
   try{
     // text/plain keeps it a "simple" request -> no CORS preflight to Apps Script.
@@ -272,22 +279,19 @@ async function flush(){
       method:"POST", headers:{"Content-Type":"text/plain;charset=utf-8"},
       body: JSON.stringify(payload), redirect:"follow"
     });
-    let acked = null, serverFailed = false;
-    try{
-      const j = await res.json();
-      if(j && j.ok === false) serverFailed = true;
-      else if(j && j.acked) acked = j.acked;
-    }catch(_){ /* response not readable cross-origin — fall through to optimistic */ }
-    if(serverFailed) throw new Error("server error");
-    // Mark synced from the ack list when we have it; otherwise optimistically
-    // (the server is idempotent by tap_id, so a re-send can never duplicate).
-    const ackSet = acked ? new Set(acked) : new Set(sentIds);
-    session.events.forEach(e=>{ if(ackSet.has(e.tapId)) e.synced = true; });
+    let body = null;
+    try{ body = await res.json(); }catch(_){ /* response not readable cross-origin */ }
+    if(body && body.ok === false) throw new Error("server error");
+    // Use server acks when readable; otherwise optimistic (server is idempotent by tap_id).
+    const ackAdds  = (body && body.acked)  ? new Set(body.acked)  : new Set(addIds);
+    const ackVoids = (body && body.voided) ? new Set(body.voided) : new Set(voidIds);
+    session.events.forEach(e=>{ if(ackAdds.has(e.tapId)) e.synced = true; });
+    session.events = session.events.filter(e=> !(e.voided && ackVoids.has(e.tapId)) );  // drop deleted taps
     saveSession();
     inFlight = false; updateSync();
-    if(pendingTaps().length) flush();   // taps arrived mid-flight -> send them now
+    if(pendingAdds().length || pendingVoids().length) flush();   // catch up on anything new
   }catch(err){
-    inFlight = false; updateSync(true);   // keep unsynced -> retried next cycle
+    inFlight = false; updateSync(true);   // keep state -> retried next cycle
   }
 }
 function updateSync(err){
@@ -309,13 +313,14 @@ function mountSummary(){
   show("summary");
   const dur = session.end ? Math.round((new Date(session.end)-new Date(session.start))/60000) : 0;
   $("#sumMeta").innerHTML = `${session.counter} · ${session.location}<br>${fmt(session.start)} → ${session.end?fmt(session.end):"(open)"} `
-    + `<span class="pill">${dur} min</span> <span class="pill">${session.events.length} bikes</span>`;
-  const counts={}; session.events.forEach(e=>counts[e.type]=(counts[e.type]||0)+1);
-  const total = session.events.length || 1;
+    + `<span class="pill">${dur} min</span> <span class="pill">${session.events.filter(e=>!e.voided).length} bikes</span>`;
+  const active = session.events.filter(e=>!e.voided);
+  const counts={}; active.forEach(e=>counts[e.type]=(counts[e.type]||0)+1);
+  const total = active.length || 1;
   const rows = CONFIG.bikeTypes.map(b=>({name:b.name,n:counts[b.id]||0})).filter(r=>r.n>0).sort((a,b)=>b.n-a.n);
   let html = `<tr><th>Type</th><th class="n">Count</th><th class="n">Share</th></tr>`;
   rows.forEach(r=> html+=`<tr><td>${r.name}</td><td class="n">${r.n}</td><td class="n">${(100*r.n/total).toFixed(1)}%</td></tr>`);
-  html += `<tr><td><strong>Total</strong></td><td class="n">${session.events.length}</td><td class="n">100%</td></tr>`;
+  html += `<tr><td><strong>Total</strong></td><td class="n">${active.length}</td><td class="n">100%</td></tr>`;
   $("#sumTable").innerHTML = html;
   renderSyncStatus();
 }
@@ -330,9 +335,10 @@ function renderSyncStatus(){
 function exportCSV(){
   const head=["tap_id","session_id","counter","location","session_start","session_end","timestamp","bike_type","bike_label","synced"];
   const lines=[head.join(",")];
-  session.events.forEach(e=> lines.push([e.tapId,session.sessionId,csv(session.counter),csv(session.location),
+  const active=session.events.filter(e=>!e.voided);
+  active.forEach(e=> lines.push([e.tapId,session.sessionId,csv(session.counter),csv(session.location),
     session.start,session.end||"",e.ts,e.type,csv(typeName(e.type)),e.synced?"yes":"no"].join(",")));
-  if(!session.events.length) lines.push([" ",session.sessionId,csv(session.counter),csv(session.location),session.start,session.end||"","","","",""].join(","));
+  if(!active.length) lines.push([" ",session.sessionId,csv(session.counter),csv(session.location),session.start,session.end||"","","","",""].join(","));
   const blob=new Blob([lines.join("\n")],{type:"text/csv"});
   const url=URL.createObjectURL(blob); const a=document.createElement("a");
   const stamp=session.start.replace(/[:.]/g,"-").slice(0,16);
