@@ -98,7 +98,7 @@
         <div>
           <div class="loc" id="liveLoc">—</div>
           <div class="total"><span id="liveCounter">—</span> · total <strong id="liveTotal">0</strong></div>
-          <div class="sync"><span class="dot" id="syncDot"></span><span id="syncText">Synced</span></div>
+          <div class="sync"><span class="dot" id="syncDot"></span><span id="syncText">Synced</span><span id="geoNote" style="margin-left:10px;color:var(--muted)">📍 …</span></div>
         </div>
         <div class="clock" id="clock">00:00</div>
       </div>
@@ -173,6 +173,7 @@ const LS_KEY = "ebikeTally.gas.activeSession.v1";
 const $ = s => document.querySelector(s);
 let session = null;     // {sessionId,counter,location,start,end,events:[{tapId,ts,type,synced}]}
 let flushTimer = null, clockTimer = null, inFlight = false;
+let geo={lat:null,lon:null,acc:null}, geoWatch=null, geoWarned=false;
 
 const loadSession = () => { try { return JSON.parse(localStorage.getItem(LS_KEY)); } catch(e){ return null; } };
 const saveSession = () => { if(session) localStorage.setItem(LS_KEY, JSON.stringify(session)); };
@@ -216,7 +217,7 @@ function mountCount(){
   show("counting");
   $("#liveLoc").textContent = session.location;
   $("#liveCounter").textContent = session.counter;
-  buildTiles(); refreshCounts(); startClock(); startFlush(); updateSync();
+  buildTiles(); refreshCounts(); startClock(); startFlush(); startGeo(); updateSync();
 }
 function buildTiles(){
   let html = `<div class="grp-label">Rental e-bike companies</div>`;
@@ -233,7 +234,7 @@ function tile(b){
   return `<div class="tile ${b.group}" data-id="${b.id}"><div class="name">${b.name}${hint}</div><div class="count" id="c-${b.id}">0</div></div>`;
 }
 function addTap(id, el){
-  session.events.push({ tapId:uid(), ts:new Date().toISOString(), type:id, synced:false, voided:false, sent:false });
+  session.events.push({ tapId:uid(), ts:new Date().toISOString(), type:id, synced:false, voided:false, sent:false, glat:geo.lat, glon:geo.lon, gacc:geo.acc });
   saveSession();
   if(navigator.vibrate) navigator.vibrate(15);
   refreshCounts(); updateSync();
@@ -269,6 +270,19 @@ function startClock(){
 /* ============================ SYNC (micro-batch) ============================ */
 function startFlush(){ clearInterval(flushTimer); flushTimer=setInterval(flush, CONFIG.flushMs); }
 function stopFlush(){ clearInterval(flushTimer); }
+function startGeo(){
+  if(geoWatch!=null) return;
+  if(!navigator.geolocation){ setGeoNote(false); return; }
+  geoWatch = navigator.geolocation.watchPosition(
+    p=>{ geo={ lat:+p.coords.latitude.toFixed(6), lon:+p.coords.longitude.toFixed(6), acc:Math.round(p.coords.accuracy) }; setGeoNote(true); },
+    e=>{ setGeoNote(false); if(!geoWarned){ geoWarned=true; toast("Location off — taps save without GPS"); } },
+    { enableHighAccuracy:true, maximumAge:8000, timeout:20000 }
+  );
+}
+function stopGeo(){ if(geoWatch!=null && navigator.geolocation){ navigator.geolocation.clearWatch(geoWatch); } geoWatch=null; }
+function setGeoNote(on){ const el=$("#geoNote"); if(!el) return;
+  if(on && geo.lat!=null){ el.textContent="📍 ±"+geo.acc+"m"; el.style.color="var(--good)"; }
+  else { el.textContent="📍 no GPS"; el.style.color="var(--muted)"; } }
 function pendingAdds(){ return session ? session.events.filter(e=>!e.voided && !e.synced) : []; }
 function pendingVoids(){ return session ? session.events.filter(e=>e.voided && e.sent) : []; }
 function pendingTaps(){ return pendingAdds().concat(pendingVoids()); }  // unresolved work
@@ -283,7 +297,7 @@ async function flush(){
   const addIds = adds.map(e=>e.tapId), voidIds = voids.map(e=>e.tapId);
   const payload = {
     sessionId:session.sessionId, counter:session.counter, location:session.location, start:session.start,
-    taps:  adds.map(e=>({ tapId:e.tapId, ts:e.ts, type:e.type, label:typeName(e.type) })),
+    taps:  adds.map(e=>({ tapId:e.tapId, ts:e.ts, type:e.type, label:typeName(e.type), glat:e.glat, glon:e.glon, gacc:e.gacc })),
     voids: voidIds
   };
   try{
@@ -320,6 +334,7 @@ function endSession(){
   session.end = new Date().toISOString(); saveSession();
   clearInterval(clockTimer); stopFlush();
   flush();              // final push
+  stopGeo();
   go("summary");
 }
 function mountSummary(){
@@ -346,12 +361,12 @@ function renderSyncStatus(){
 
 /* ============================ CSV BACKUP ============================ */
 function exportCSV(){
-  const head=["tap_id","session_id","counter","location","session_start","session_end","timestamp","bike_type","bike_label","synced"];
+  const head=["tap_id","session_id","counter","location","session_start","session_end","timestamp","bike_type","bike_label","gps_lat","gps_lon","gps_accuracy_m","synced"];
   const lines=[head.join(",")];
   const active=session.events.filter(e=>!e.voided);
   active.forEach(e=> lines.push([e.tapId,session.sessionId,csv(session.counter),csv(session.location),
-    session.start,session.end||"",e.ts,e.type,csv(typeName(e.type)),e.synced?"yes":"no"].join(",")));
-  if(!active.length) lines.push([" ",session.sessionId,csv(session.counter),csv(session.location),session.start,session.end||"","","","",""].join(","));
+    session.start,session.end||"",e.ts,e.type,csv(typeName(e.type)),e.glat??"",e.glon??"",e.gacc??"",e.synced?"yes":"no"].join(",")));
+  if(!active.length) lines.push([" ",session.sessionId,csv(session.counter),csv(session.location),session.start,session.end||"","","","","","","",""].join(","));
   const blob=new Blob([lines.join("\n")],{type:"text/csv"});
   const url=URL.createObjectURL(blob); const a=document.createElement("a");
   const stamp=session.start.replace(/[:.]/g,"-").slice(0,16);
@@ -371,7 +386,7 @@ function toast(m){ const t=$("#toast"); t.textContent=m; t.classList.add("show")
 function render(screen){
   if(screen==="counting"){ if(!session){ render("setup"); return; } mountCount(); }
   else if(screen==="summary"){ if(!session){ render("setup"); return; } mountSummary(); }
-  else { stopFlush(); refreshHome(); show("setup"); }
+  else { stopFlush(); stopGeo(); refreshHome(); show("setup"); }
 }
 function go(screen){ history.pushState({screen}, ""); render(screen); }
 window.addEventListener("popstate", e=> render((e.state && e.state.screen) || "setup"));
