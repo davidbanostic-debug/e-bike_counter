@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#0b132b">
+<title>E-Bike Tally Counter</title>
+<style>
+  /* =========================================================
+     EDIT YOUR LOCATIONS & BIKE TYPES IN THE CONFIG BLOCK BELOW.
+     ========================================================= */
+  :root{
+    --bg:#0b132b; --panel:#1c2541; --panel2:#243352;
+    --accent:#3a86ff; --good:#2ec4b6; --warn:#ff9f1c; --bad:#e63946;
+    --ink:#fff; --muted:#a9b4cc; --line:#33415c;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{margin:0; padding:0;}
+  body{
+    background:var(--bg); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    font-size:17px; line-height:1.3; -webkit-user-select:none; user-select:none;
+  }
+  .wrap{max-width:560px; margin:0 auto; padding:12px;}
+  h1{font-size:20px; margin:4px 0 2px;}
+  .sub{color:var(--muted); font-size:13px; margin:0 0 14px;}
+  label{display:block; font-size:13px; color:var(--muted); margin:12px 0 4px;}
+  input,select{width:100%; font-size:18px; padding:14px; border-radius:12px;
+    border:1px solid var(--line); background:var(--panel2); color:var(--ink);}
+  .btn{display:block; width:100%; border:none; border-radius:14px; color:#fff;
+    font-size:18px; font-weight:600; padding:16px; margin-top:14px; cursor:pointer;}
+  .btn-primary{background:var(--accent);}
+  .btn-good{background:var(--good); color:#04312c;}
+  .btn-warn{background:var(--warn); color:#3a2500;}
+  .btn-bad{background:var(--bad);}
+  .btn-ghost{background:transparent; border:1px solid var(--line); color:var(--ink);}
+  .btn:active{filter:brightness(.9);}
+  .hidden{display:none !important;}
+  .topbar{position:sticky; top:0; z-index:5; background:var(--bg);
+    padding:8px 0 10px; border-bottom:1px solid var(--line); margin-bottom:10px;}
+  .meta{display:flex; justify-content:space-between; align-items:center; gap:8px;}
+  .meta .loc{font-weight:700; font-size:15px;}
+  .meta .clock{color:var(--muted); font-size:13px; font-variant-numeric:tabular-nums;}
+  .total{font-size:13px; color:var(--muted); margin-top:2px;}
+  .sync{display:inline-flex; align-items:center; gap:6px; font-size:12px; margin-top:4px;}
+  .dot{width:9px; height:9px; border-radius:50%; background:var(--good); display:inline-block;}
+  .dot.pending{background:var(--warn);} .dot.err{background:var(--bad);}
+  .grp-label{font-size:12px; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); margin:10px 2px 0;}
+  .grid{display:flex; flex-direction:column; gap:10px;}
+  .tile{position:relative; display:flex; align-items:center; justify-content:space-between;
+    min-height:68px; padding:14px 16px; border-radius:16px; border:1px solid var(--line);
+    background:var(--panel); cursor:pointer; transition:transform .04s;}
+  .tile:active{transform:scale(.985); filter:brightness(1.15);}
+  .tile.brand{border-left:6px solid var(--accent);}
+  .tile.legal{border-left:6px solid var(--good);}
+  .tile.illegal{border-left:6px solid var(--bad);}
+  .tile.other{border-left:6px solid var(--muted);}
+  .tile.unsure{border-left:6px solid var(--warn);}
+  .tile .name{font-size:18px; font-weight:600;}
+  .tile .hint{display:block; font-size:12px; color:var(--muted); font-weight:400; margin-top:2px;}
+  .tile .count{min-width:54px; text-align:center; font-size:30px; font-weight:800;
+    font-variant-numeric:tabular-nums; margin-left:12px;}
+  .flash{animation:pop .3s ease;}
+  @keyframes pop{0%{background:var(--accent);}100%{background:var(--panel);}}
+  .controls{position:sticky; bottom:0; background:var(--bg); padding-top:10px; margin-top:10px; border-top:1px solid var(--line);}
+  .row2{display:flex; gap:10px;} .row2 .btn{flex:1; margin-top:0;}
+  table{width:100%; border-collapse:collapse; margin-top:8px; font-size:15px;}
+  th,td{text-align:left; padding:8px 6px; border-bottom:1px solid var(--line);}
+  td.n{text-align:right; font-variant-numeric:tabular-nums; font-weight:700;}
+  .toast{position:fixed; left:50%; bottom:24px; transform:translateX(-50%);
+    background:#000; color:#fff; padding:10px 16px; border-radius:20px; font-size:14px;
+    opacity:0; transition:opacity .2s; pointer-events:none; z-index:50;}
+  .toast.show{opacity:.92;}
+  .pill{display:inline-block; font-size:11px; padding:2px 8px; border-radius:10px; background:var(--panel2); color:var(--muted); margin-left:6px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- SETUP -->
+  <section id="setup">
+    <h1>E-Bike Tally Counter</h1>
+    <p class="sub">Set up your session, then count with one tap per bike. Taps sync to the shared sheet automatically.</p>
+    <label for="counter">Your name</label>
+    <input id="counter" type="text" autocomplete="name" placeholder="e.g. Sam">
+    <label for="location">Location</label>
+    <select id="location"></select>
+    <input id="locationOther" type="text" class="hidden" placeholder="Type the location name" style="margin-top:8px;">
+    <button id="startBtn" class="btn btn-primary">Start session</button>
+    <button id="resumeBtn" class="btn btn-ghost hidden">Resume unfinished session</button>
+    <p id="setupNote" class="sub" style="margin-top:14px;"></p>
+  </section>
+
+  <!-- COUNTING -->
+  <section id="counting" class="hidden">
+    <div class="topbar">
+      <div class="meta">
+        <div>
+          <div class="loc" id="liveLoc">—</div>
+          <div class="total"><span id="liveCounter">—</span> · total <strong id="liveTotal">0</strong></div>
+          <div class="sync"><span class="dot" id="syncDot"></span><span id="syncText">Synced</span></div>
+        </div>
+        <div class="clock" id="clock">00:00</div>
+      </div>
+    </div>
+    <div class="grid" id="tiles"></div>
+    <div class="controls">
+      <div class="row2">
+        <button id="undoBtn" class="btn btn-warn">↶ Undo last</button>
+        <button id="endBtn" class="btn btn-bad">End session</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- SUMMARY -->
+  <section id="summary" class="hidden">
+    <h1>Session summary</h1>
+    <p class="sub" id="sumMeta"></p>
+    <table id="sumTable"></table>
+    <p id="syncStatus" class="sub"></p>
+    <button id="syncNowBtn" class="btn btn-good">↑ Sync now</button>
+    <button id="exportBtn" class="btn btn-ghost">⬇ Download CSV (backup)</button>
+    <button id="newBtn" class="btn btn-primary">Start a new session</button>
+    <button id="backBtn" class="btn btn-ghost">↩ Back to counting</button>
+  </section>
+
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+/* ============================ CONFIG — EDIT ME ============================ */
+const CONFIG = {
+  // ⚠️ PASTE your Apps Script Web App URL here (ends in /exec).
+  // See SETUP_v3.md. Without it the app runs offline (CSV backup only).
+  endpoint: "https://script.google.com/macros/s/AKfycbwjN4FYoZFnzFu1rJjpjG3I3pXisPGZOfIfdwcMDmkXu0JR92mOz0YXBv--g6BNvLZqBQ/exec",
+
+  locations: [
+    "Shoreditch High St","Camden High St","Oxford St / Marble Arch",
+    "Queensway","Brixton","Stratford"
+  ],
+  bikeTypes: [
+    // E-bike RENTAL companies
+    { id:"port",   name:"Port",   group:"brand", hint:"Port-branded (Segway A200P)" },
+    { id:"zoomo",  name:"Zoomo",  group:"brand", hint:"Zoomo livery; often Deliveroo/Just Eat" },
+    { id:"lime",   name:"Lime",   group:"brand", hint:"green & white dockless hire bike" },
+    { id:"moby",   name:"Moby",   group:"brand", hint:"Moby delivery e-bike" },
+    { id:"forest", name:"Forest", group:"brand", hint:"HumanForest, red hire bike" },
+    { id:"other_rental", name:"Other rental e-bike", group:"other", hint:"a rental bike not listed above" },
+    // Personal (non-delivery)
+    { id:"pers_legal",   name:"Personal — road-legal",     group:"legal",   hint:"pedals, you must pedal to go, no throttle" },
+    { id:"pers_illegal", name:"Personal — NOT road-legal", group:"illegal", hint:"throttle-only / moped look / no working pedals" },
+    // Fallback
+    { id:"unsure", name:"Unsure / couldn't ID", group:"unsure", hint:"log it rather than skip it" }
+  ],
+  flushMs: 3000   // how often the queue is pushed to the sheet
+};
+
+/* ============================ STATE ============================ */
+const LS_KEY = "ebikeTally.gas.activeSession.v1";
+const $ = s => document.querySelector(s);
+let session = null;     // {sessionId,counter,location,start,end,events:[{tapId,ts,type,synced}]}
+let flushTimer = null, clockTimer = null, inFlight = false;
+
+const loadSession = () => { try { return JSON.parse(localStorage.getItem(LS_KEY)); } catch(e){ return null; } };
+const saveSession = () => { if(session) localStorage.setItem(LS_KEY, JSON.stringify(session)); };
+const clearSession = () => localStorage.removeItem(LS_KEY);
+function uid(){ return 'xxxxxxxxxxxx4xxxyxxxxxxxxxxxxxxx'.replace(/[xy]/g,c=>{const r=Math.random()*16|0;return (c==='x'?r:(r&0x3|0x8)).toString(16);}); }
+function typeName(id){ const t=CONFIG.bikeTypes.find(b=>b.id===id); return t?t.name:id; }
+
+/* ============================ SETUP ============================ */
+function initSetup(){
+  const sel = $("#location");
+  sel.innerHTML = CONFIG.locations.map(l=>`<option>${l}</option>`).join("")
+    + `<option value="__other__">Other (type it in)…</option>`;
+  sel.addEventListener("change", ()=> $("#locationOther").classList.toggle("hidden", sel.value!=="__other__"));
+  $("#startBtn").addEventListener("click", startSession);
+  $("#resumeBtn").addEventListener("click", ()=>{ session = loadSession(); if(session) go("counting"); });
+  refreshHome();
+}
+function refreshHome(){
+  const ex = loadSession();
+  if(ex && !ex.end){
+    const pending = ex.events.filter(e=>!e.synced).length;
+    $("#resumeBtn").classList.remove("hidden");
+    $("#resumeBtn").textContent = `Resume session — ${ex.location} (${ex.events.length} taps)`;
+    $("#setupNote").textContent = `An unfinished session is saved on this phone (${pending} not yet sent). Tap Resume to carry on.`;
+  } else { $("#resumeBtn").classList.add("hidden"); $("#setupNote").textContent=""; }
+}
+function startSession(){
+  const counter = $("#counter").value.trim();
+  const sel = $("#location"); let loc = sel.value;
+  if(loc==="__other__") loc = $("#locationOther").value.trim();
+  if(!counter){ toast("Enter your name first"); return; }
+  if(!loc){ toast("Pick or type a location"); return; }
+  const ex = loadSession();
+  if(ex && !ex.end && !confirm("An unfinished session is saved on this phone. Starting new will overwrite it locally. Continue?")) return;
+  session = { sessionId: uid(), counter, location:loc, start:new Date().toISOString(), end:null, events:[] };
+  saveSession(); go("counting");
+}
+
+/* ============================ COUNTING ============================ */
+function mountCount(){
+  show("counting");
+  $("#liveLoc").textContent = session.location;
+  $("#liveCounter").textContent = session.counter;
+  buildTiles(); refreshCounts(); startClock(); startFlush(); updateSync();
+}
+function buildTiles(){
+  let html = `<div class="grp-label">Rental e-bike companies</div>`;
+  CONFIG.bikeTypes.filter(b=>b.group==="brand"||b.group==="other").forEach(b=>html+=tile(b));
+  html += `<div class="grp-label">Personal (non-delivery) bikes</div>`;
+  CONFIG.bikeTypes.filter(b=>b.group==="legal"||b.group==="illegal").forEach(b=>html+=tile(b));
+  html += `<div class="grp-label">If you can't tell</div>`;
+  CONFIG.bikeTypes.filter(b=>b.group==="unsure").forEach(b=>html+=tile(b));
+  $("#tiles").innerHTML = html;
+  document.querySelectorAll(".tile").forEach(el=> el.addEventListener("click", ()=>addTap(el.dataset.id, el)));
+}
+function tile(b){
+  const hint = b.hint ? `<span class="hint">${b.hint}</span>` : "";
+  return `<div class="tile ${b.group}" data-id="${b.id}"><div class="name">${b.name}${hint}</div><div class="count" id="c-${b.id}">0</div></div>`;
+}
+function addTap(id, el){
+  session.events.push({ tapId:uid(), ts:new Date().toISOString(), type:id, synced:false });
+  saveSession();
+  if(navigator.vibrate) navigator.vibrate(15);
+  refreshCounts(); updateSync();
+  if(el){ el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash"); }
+  flush(); // opportunistic; interval is the safety net
+}
+function undo(){
+  if(!session.events.length){ toast("Nothing to undo"); return; }
+  // remove the most recent tap; if it was already synced it's harmless to leave in the sheet,
+  // but we mark a tombstone so it isn't counted locally. Simplest: pop unsynced; if synced, warn.
+  const last = session.events[session.events.length-1];
+  if(last.synced){
+    if(!confirm("The last tap is already saved to the sheet. Remove it locally anyway? (It will remain in the sheet — tell David to drop that row.)")) return;
+  }
+  session.events.pop(); saveSession(); refreshCounts(); updateSync();
+  toast("Removed: " + typeName(last.type));
+}
+function refreshCounts(){
+  const counts = {}; session.events.forEach(e=> counts[e.type]=(counts[e.type]||0)+1);
+  CONFIG.bikeTypes.forEach(b=>{ const el=$("#c-"+b.id); if(el) el.textContent = counts[b.id]||0; });
+  $("#liveTotal").textContent = session.events.length;
+}
+function startClock(){
+  clearInterval(clockTimer);
+  const tick=()=>{ const s=Math.floor((Date.now()-new Date(session.start).getTime())/1000);
+    $("#clock").textContent = String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0"); };
+  tick(); clockTimer=setInterval(tick,1000);
+}
+
+/* ============================ SYNC (micro-batch) ============================ */
+function startFlush(){ clearInterval(flushTimer); flushTimer=setInterval(flush, CONFIG.flushMs); }
+function stopFlush(){ clearInterval(flushTimer); }
+function pendingTaps(){ return session ? session.events.filter(e=>!e.synced) : []; }
+
+async function flush(){
+  if(inFlight || !session) return;
+  const pending = pendingTaps();
+  if(!pending.length){ updateSync(); return; }
+  if(!CONFIG.endpoint){ updateSync(true); return; }   // offline / not configured
+  inFlight = true; updateSync();
+  const sentIds = pending.map(e=>e.tapId);
+  const payload = {
+    sessionId:session.sessionId, counter:session.counter, location:session.location, start:session.start,
+    taps: pending.map(e=>({ tapId:e.tapId, ts:e.ts, type:e.type, label:typeName(e.type) }))
+  };
+  try{
+    // text/plain keeps it a "simple" request -> no CORS preflight to Apps Script.
+    const res = await fetch(CONFIG.endpoint, {
+      method:"POST", headers:{"Content-Type":"text/plain;charset=utf-8"},
+      body: JSON.stringify(payload), redirect:"follow"
+    });
+    let acked = null, serverFailed = false;
+    try{
+      const j = await res.json();
+      if(j && j.ok === false) serverFailed = true;
+      else if(j && j.acked) acked = j.acked;
+    }catch(_){ /* response not readable cross-origin — fall through to optimistic */ }
+    if(serverFailed) throw new Error("server error");
+    // Mark synced from the ack list when we have it; otherwise optimistically
+    // (the server is idempotent by tap_id, so a re-send can never duplicate).
+    const ackSet = acked ? new Set(acked) : new Set(sentIds);
+    session.events.forEach(e=>{ if(ackSet.has(e.tapId)) e.synced = true; });
+    saveSession();
+    inFlight = false; updateSync();
+    if(pendingTaps().length) flush();   // taps arrived mid-flight -> send them now
+  }catch(err){
+    inFlight = false; updateSync(true);   // keep unsynced -> retried next cycle
+  }
+}
+function updateSync(err){
+  const dot=$("#syncDot"), txt=$("#syncText"); if(!dot) return;
+  const p = pendingTaps().length;
+  dot.className = "dot" + (err ? " err" : (p? " pending":""));
+  txt.textContent = inFlight ? "Saving…" : err ? (p+" to retry") : p ? (p+" pending") : "All saved";
+}
+
+/* ============================ SUMMARY ============================ */
+function endSession(){
+  if(!confirm("End this session? Remaining taps will be sent now.")) return;
+  session.end = new Date().toISOString(); saveSession();
+  clearInterval(clockTimer); stopFlush();
+  flush();              // final push
+  go("summary");
+}
+function mountSummary(){
+  show("summary");
+  const dur = session.end ? Math.round((new Date(session.end)-new Date(session.start))/60000) : 0;
+  $("#sumMeta").innerHTML = `${session.counter} · ${session.location}<br>${fmt(session.start)} → ${session.end?fmt(session.end):"(open)"} `
+    + `<span class="pill">${dur} min</span> <span class="pill">${session.events.length} bikes</span>`;
+  const counts={}; session.events.forEach(e=>counts[e.type]=(counts[e.type]||0)+1);
+  const total = session.events.length || 1;
+  const rows = CONFIG.bikeTypes.map(b=>({name:b.name,n:counts[b.id]||0})).filter(r=>r.n>0).sort((a,b)=>b.n-a.n);
+  let html = `<tr><th>Type</th><th class="n">Count</th><th class="n">Share</th></tr>`;
+  rows.forEach(r=> html+=`<tr><td>${r.name}</td><td class="n">${r.n}</td><td class="n">${(100*r.n/total).toFixed(1)}%</td></tr>`);
+  html += `<tr><td><strong>Total</strong></td><td class="n">${session.events.length}</td><td class="n">100%</td></tr>`;
+  $("#sumTable").innerHTML = html;
+  renderSyncStatus();
+}
+function renderSyncStatus(){
+  const p = pendingTaps().length; const st=$("#syncStatus"), btn=$("#syncNowBtn");
+  if(!CONFIG.endpoint){ st.style.color="var(--muted)"; st.textContent="Offline mode — no endpoint set. Use Download CSV."; btn.classList.add("hidden"); return; }
+  if(p===0){ st.style.color="var(--good)"; st.textContent="✓ All taps saved to the shared sheet."; btn.classList.add("hidden"); }
+  else { st.style.color="var(--warn)"; st.textContent=`${p} tap(s) not yet sent — they're saved on this phone. Tap Sync now (needs signal).`; btn.classList.remove("hidden"); btn.disabled=false; btn.textContent="↑ Sync now"; }
+}
+
+/* ============================ CSV BACKUP ============================ */
+function exportCSV(){
+  const head=["tap_id","session_id","counter","location","session_start","session_end","timestamp","bike_type","bike_label","synced"];
+  const lines=[head.join(",")];
+  session.events.forEach(e=> lines.push([e.tapId,session.sessionId,csv(session.counter),csv(session.location),
+    session.start,session.end||"",e.ts,e.type,csv(typeName(e.type)),e.synced?"yes":"no"].join(",")));
+  if(!session.events.length) lines.push([" ",session.sessionId,csv(session.counter),csv(session.location),session.start,session.end||"","","","",""].join(","));
+  const blob=new Blob([lines.join("\n")],{type:"text/csv"});
+  const url=URL.createObjectURL(blob); const a=document.createElement("a");
+  const stamp=session.start.replace(/[:.]/g,"-").slice(0,16);
+  const slug=session.location.replace(/[^a-z0-9]+/gi,"-").toLowerCase();
+  a.href=url; a.download=`ebike-tally_${slug}_${stamp}.csv`; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+  toast("CSV backup downloaded");
+}
+
+/* ============================ HELPERS ============================ */
+function show(id){ ["setup","counting","summary"].forEach(s=>$("#"+s).classList.toggle("hidden", s!==id)); window.scrollTo(0,0); }
+function csv(v){ v=String(v??""); return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v; }
+function fmt(iso){ const d=new Date(iso); return d.toLocaleString([], {day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"}); }
+let toastTimer=null;
+function toast(m){ const t=$("#toast"); t.textContent=m; t.classList.add("show"); clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.classList.remove("show"),1600); }
+
+/* ============================ NAVIGATION (Back-button safe) ============================ */
+function render(screen){
+  if(screen==="counting"){ if(!session){ render("setup"); return; } mountCount(); }
+  else if(screen==="summary"){ if(!session){ render("setup"); return; } mountSummary(); }
+  else { stopFlush(); refreshHome(); show("setup"); }
+}
+function go(screen){ history.pushState({screen}, ""); render(screen); }
+window.addEventListener("popstate", e=> render((e.state && e.state.screen) || "setup"));
+
+/* ============================ WIRING ============================ */
+$("#undoBtn").addEventListener("click", undo);
+$("#endBtn").addEventListener("click", endSession);
+$("#syncNowBtn").addEventListener("click", ()=>{ flush(); setTimeout(renderSyncStatus, 600); });
+$("#exportBtn").addEventListener("click", exportCSV);
+$("#newBtn").addEventListener("click", ()=>{ const p=pendingTaps().length; if(p && !confirm(p+" taps haven't been sent yet. Start new anyway?")) return; clearSession(); session=null; go("setup"); });
+$("#backBtn").addEventListener("click", ()=>{ session.end=null; saveSession(); go("counting"); });
+window.addEventListener("beforeunload", e=>{ if(session && !session.end && pendingTaps().length){ e.preventDefault(); e.returnValue=""; } });
+history.replaceState({screen:"setup"}, "");
+initSetup();
+</script>
+</body>
+</html>
